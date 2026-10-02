@@ -1,0 +1,14 @@
+# JitPack build configuration
+# https://jitpack.io/docs/BUILDING/
+
+# Use JDK 17 for Android builds
+jdk:
+  - openjdk17
+
+# Only build the SDK module (skip :app to avoid timeout)
+install:
+  - ./gradlew :sdk:publishToMavenLocal -x :app:assemble -x :app:compileDebugKotlin -x :app:compileReleaseKotlin --no-daemon
+
+# Before installation
+before_install:
+  - chmod +x gradlew

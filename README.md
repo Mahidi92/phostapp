@@ -1,0 +1,370 @@
+# Proxies.sx Peer SDK for Android
+
+[![](https://jitpack.io/v/bolivian-peru/android-peer-sdk.svg)](https://jitpack.io/#bolivian-peru/android-peer-sdk)
+
+Android SDK for integrating bandwidth sharing into your app. Users earn money by sharing their unused mobile bandwidth while you earn proxy credits.
+
+**The Android SDK is one of several ways to join the Peer Network.** See [Other Integration Paths](#other-integration-paths) below for Node.js, Docker, and Linux options.
+
+---
+
+> ## Current version: **v1.3.1**
+>
+> ```kotlin
+> implementation("com.github.bolivian-peru:android-peer-sdk:1.3.1")
+> ```
+>
+> v1.3.1 delivers fast, full-throughput bandwidth sharing. Four things make it fast:
+>
+> - **Full-throughput tunnels** — the SDK signals `tunnel_connected` the instant its outbound socket opens, so the relay streams the customer's traffic immediately instead of stalling on the TLS handshake. This is what lets a device serve traffic at its real uplink speed.
+> - **Nearest-relay routing** — the `/peer/register` response carries a `relay` field; the SDK connects to the geographically nearest relay (US/LATAM → `wss://relay-us.proxies.sx`, everyone else → `wss://relay.proxies.sx`) and honors runtime `relay_redirect`, so no device tunnels across an ocean. Guards: only `*.proxies.sx` wss targets are honored, a 60s anti-flap interval applies, and an explicit `Config.relayUrl` pin disables redirects.
+> - **Binary tunnel protocol + compression** — minimal CPU and per-frame overhead.
+> - **Encrypted credential storage** — AES-256-GCM via Android Keystore.
+>
+> API surface: `ProxiesPeerSDK.init / start / stop / getEarnings`. Relay routing is fully automatic — `Config.relayUrl` is optional (leave unset to geo-route).
+
+---
+
+## Installation
+
+### Step 1: Add JitPack repository
+
+Add JitPack to your root `build.gradle.kts` (or `settings.gradle.kts`):
+
+```kotlin
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url = uri("https://jitpack.io") }
+    }
+}
+```
+
+Or in Groovy (`build.gradle`):
+
+```groovy
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url 'https://jitpack.io' }
+    }
+}
+```
+
+### Step 2: Add the dependency
+
+In your app's `build.gradle.kts`:
+
+```kotlin
+dependencies {
+    implementation("com.github.bolivian-peru:android-peer-sdk:1.3.1")
+}
+```
+
+Or in Groovy:
+
+```groovy
+dependencies {
+    implementation 'com.github.bolivian-peru:android-peer-sdk:1.3.1'
+}
+```
+
+## Quick Start
+
+### 1. Initialize SDK
+
+```kotlin
+// In your Application class or main Activity
+import sx.proxies.peer.ProxiesPeerSDK
+
+class MyApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+
+        ProxiesPeerSDK.init(
+            context = this,
+            apiKey = "psx_your_api_key", // Get from farmer.proxies.sx > Account > API Keys
+            config = ProxiesPeerSDK.Config(
+                userId = "optional-user-id", // Link to your user system
+                onStatusChange = { status ->
+                    Log.d("ProxiesSDK", "Status: $status")
+                },
+                onEarningsUpdate = { earnings ->
+                    Log.d("ProxiesSDK", "Earned: $${earnings.totalEarnedCents / 100.0}")
+                }
+            )
+        )
+    }
+}
+```
+
+The `apiKey` (format: `psx_...`) auto-links the device to your farmer account. After signing in to your [farmer dashboard](https://farmer.proxies.sx), your devices appear under the **Peers** page immediately after connecting. (The `/peers` page requires login; for public peer-network info and the agent skill file see https://agents.proxies.sx/peer/.)
+
+### 2. Start/Stop sharing
+
+```kotlin
+val sdk = ProxiesPeerSDK.getInstance()
+
+// Start sharing (runs as foreground service)
+sdk.start()
+
+// Stop sharing
+sdk.stop()
+
+// Check status
+val isRunning = sdk.isRunning()
+```
+
+### 3. Get earnings
+
+```kotlin
+lifecycleScope.launch {
+    val earnings = sdk.getEarnings()
+    println("Total earned: $${earnings.totalEarnedCents / 100.0}")
+    println("Traffic shared: ${earnings.totalTrafficMB} MB")
+}
+```
+
+## Dashboard & Marketplace
+
+Once your device is connected, manage it from the farmer dashboard:
+
+1. **farmer.proxies.sx → Peers** (sign in first) — See all your devices, status, IP type, country, ISP, traffic, earnings
+2. **Auto-listing** — Healthy, verified, online devices are listed in the pool gateway automatically. You can also toggle "Listed for Sale" per device, and enable/disable auto-listing for your account.
+3. **Automated verification** — System checks IP quality, ISP legitimacy, VPN/proxy detection, GeoIP match
+4. **Quality score** — Each device gets a 0-100 score; verified devices serve customer traffic and earn more
+
+### Verification requirements
+
+| Check | Requirement |
+|-------|------------|
+| IP Type | Must be residential or mobile |
+| ISP/ASN | Checked against datacenter and VPN databases |
+| GeoIP | Country must match claimed location |
+| Uptime | Minimum 1 hour online |
+| Quality | Score must be >= 50/100 |
+
+## IP Rotation (planned — not in v1.1.x)
+
+SDK-side IP rotation via accessibility-service-driven airplane-mode toggle is on the roadmap but **does not ship in v1.1.x**. The classes `AirplaneModeAccessibilityService`, `IPRotationManager` and the methods `sdk.rotateIP()`, `sdk.isIPRotationAvailable()`, `sdk.rotateIPAsync()`, `sdk.openIPRotationSettings()` are not present in the artifact — earlier README revisions documented them in error.
+
+The backend route `POST /v1/peer/devices/:id/rotate` exists but returns HTTP 501 for v1.1.x clients. The feature is tracked under Phase 3b of the SDK production-readiness plan and will land in a future major version.
+
+## Required Permissions
+
+The SDK automatically adds these permissions via manifest merge:
+
+```xml
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+<uses-permission android:name="android.permission.WAKE_LOCK" />
+```
+
+**Note:** For Android 13+, you'll need to request POST_NOTIFICATIONS permission at runtime.
+
+## Best Practices
+
+### When to share
+
+- When the app is in the background
+- When the device is charging
+- When connected to mobile data (more valuable than WiFi)
+- During idle periods in games or apps
+
+### User consent
+
+Always obtain clear user consent before enabling bandwidth sharing:
+
+```kotlin
+// Show consent dialog first
+AlertDialog.Builder(this)
+    .setTitle("Earn Money")
+    .setMessage("Share your unused bandwidth to earn rewards. You control when sharing happens.")
+    .setPositiveButton("Enable") { _, _ ->
+        sdk.start()
+    }
+    .setNegativeButton("Later", null)
+    .show()
+```
+
+### Battery optimization
+
+The SDK uses minimal resources and runs as a foreground service with a persistent notification. Users can see their sharing status at all times.
+
+## Privacy & IP Reputation (May 2026)
+
+Your device's exit IP and identifiers are **never publicly enumerable** through the Proxies.sx API. Specifically:
+
+- The previously-public `GET /v1/peer/board`, `/v1/peer/proxy/credentials`, `/v1/peer/proxy/devices`, `/v1/peer/stats/online`, and `relay.proxies.sx/health` endpoints have all been locked to admin-only authentication.
+- Customer-facing endpoints (`gw.proxies.sx:7000` / `:7001`, `/v1/gateway/pool/availability`) expose aggregate counts only — never per-device IPs or carriers.
+- Credentials persisted on your device are AES-256-GCM encrypted via Android Keystore (`androidx.security:security-crypto`) since v1.1.4.
+- Refresh tokens, wallet addresses, and your developer API key are stripped from any admin-side debug response.
+
+This means anti-bot vendors (DataDome, PerimeterX, Cloudflare Bot Manager, Akamai) cannot pre-emptively blacklist your device by scraping our pool listing — a common failure mode for shared-proxy networks. Your IP enters the customer routing pipeline cold, not on a public reputation feed.
+
+## Revenue Model
+
+Earnings are tiered by IP type — mobile IPs earn the most:
+
+| IP Type | Rate Tier | Examples |
+|---------|-----------|---------|
+| **Mobile** | Highest | AT&T, Verizon, T-Mobile, Vodafone |
+| **Residential** | Mid | Comcast, Spectrum, Cox, BT |
+| **Datacenter** | Base | AWS, GCP, Azure, VPNs |
+
+IP type is classified server-side via ASN lookup. Earnings accumulate per-GB and are paid out in USDC on Solana. Minimum payout: $5.
+
+## SDK Methods
+
+| Method | Description |
+|--------|-------------|
+| `init(context, apiKey, config)` | Initialize SDK (call once) |
+| `getInstance()` | Get SDK instance |
+| `start()` | Start sharing service |
+| `stop()` | Stop sharing service |
+| `isRunning()` | Check if service is running |
+| `getStatus()` | Get current status enum |
+| `getEarnings()` | Get earnings (suspend function) |
+
+## Status Values
+
+| Status | Description |
+|--------|-------------|
+| `STOPPED` | Service not running |
+| `CONNECTING` | Connecting to relay server |
+| `CONNECTED` | Active and sharing bandwidth |
+| `ERROR` | Connection error (check logs) |
+
+## Configuration Options
+
+```kotlin
+ProxiesPeerSDK.Config(
+    // Link earnings to your user system
+    userId = "user-123",
+
+    // Status change callback
+    onStatusChange = { status -> },
+
+    // Earnings update callback
+    onEarningsUpdate = { earnings -> },
+
+    // Operator relay pin (optional). Leave unset to let the platform
+    // geo-route this device to the nearest relay and migrate it at runtime.
+    // Set this ONLY to force a specific relay (disables geo-routing).
+    relayUrl = "wss://relay.proxies.sx",
+
+    // Maximum bandwidth to share (MB per hour)
+    maxBandwidthMBPerHour = 100,
+
+    // Only share when charging
+    onlyWhenCharging = false,
+
+    // Only share on mobile data (not WiFi)
+    mobileDataOnly = true
+)
+```
+
+## Other Integration Paths
+
+The Android SDK is best for mobile apps. For other environments, use these alternatives:
+
+### Node.js / Linux / VPS
+
+Run a lightweight peer script on any machine with Node.js 18+:
+
+```bash
+# 1. Get your API key from farmer.proxies.sx > Account > API Keys
+
+# 2. Create peer.mjs and run it
+node peer.mjs
+```
+
+The script registers via `POST /v1/peer/agents/register` with your `apiKey`, connects to `wss://relay.proxies.sx`, and handles proxy requests. Full integration guide at [farmer.proxies.sx](https://farmer.proxies.sx) > Peers > SDK Integration tab.
+
+### Docker
+
+Run a peer node as a Docker container:
+
+```bash
+docker run -d --name proxies-peer \
+  -e DEVICE_NAME=my-docker-peer \
+  -e API_KEY=psx_your_key \
+  --restart unless-stopped \
+  node:18-slim node -e "$(curl -s https://agents.proxies.sx/peer/skill.md | ...)"
+```
+
+Or use the Node.js script in a Dockerfile. See the integration guide for the full peer.mjs script.
+
+### AI Agents (Claude, GPT, Custom)
+
+AI agents register programmatically:
+
+```bash
+curl -X POST https://api.proxies.sx/v1/peer/agents/register \
+  -H "Content-Type: application/json" \
+  -d '{"name":"my-agent","type":"claude","apiKey":"psx_your_key"}'
+```
+
+Full API reference: [agents.proxies.sx/peer/skill.md](https://agents.proxies.sx/peer/skill.md)
+
+## Sample App
+
+See the `/app` module for a complete sample application demonstrating:
+- SDK initialization
+- Start/stop sharing
+- Displaying earnings
+- Handling status changes
+- Foreground notification
+
+## ProGuard
+
+If you use ProGuard/R8, the SDK includes consumer ProGuard rules automatically. No additional configuration needed.
+
+## Troubleshooting
+
+### "Relay connection failed"
+
+- Check internet connectivity
+- Verify API key is correct (format: `psx_...`)
+- Check if VPN is blocking WebSocket connections
+
+### Service stops unexpectedly
+
+- Disable battery optimization for your app
+- On MIUI/EMUI, add app to protected apps list
+
+### Low earnings
+
+- Earnings depend on traffic demand in user's region
+- Mobile data connections are more valuable than WiFi
+- Peak hours have higher demand
+- List your device for sale in the farmer dashboard to serve customer traffic
+
+### Device not appearing in dashboard
+
+- Make sure you're using an API key (`psx_...`) from your farmer account
+- The `apiKey` in `init()` auto-links the device — without it, the device registers but isn't linked to your account
+
+## Links
+
+| Resource | URL |
+|----------|-----|
+| Farmer Dashboard (login required) | https://farmer.proxies.sx → **Peers** |
+| Peer Landing Page (public) | https://agents.proxies.sx/peer/ |
+| AI Agent Skill File | https://agents.proxies.sx/peer/skill.md |
+| Register endpoint (POST) | https://api.proxies.sx/v1/peer/agents/register |
+| API Docs (Swagger) | https://api.proxies.sx/docs/api |
+| MCP Server | https://www.npmjs.com/package/@proxies-sx/mcp-server |
+
+## Support
+
+- Telegram: https://t.me/proxies_sx
+- GitHub Issues: https://github.com/bolivian-peru/android-peer-sdk/issues
+
+## License
+
+MIT License - See [LICENSE](LICENSE) for details.
